@@ -330,6 +330,22 @@
   }
   .hist-close:active{transform:scale(.96)}
   .hist-note{margin:0 0 10px}
+  .hist-tabs{display:flex;gap:4px;background:var(--bg-deep);border:1px solid var(--line);border-radius:999px;padding:3px;margin-bottom:10px}
+  .hist-tab{flex:1 1 0;min-height:38px;border:0;border-radius:999px;background:transparent;color:var(--ink-2);font-size:14px;font-weight:700;line-height:1}
+  .hist-tab.active{background:var(--surface-2);color:var(--ink);box-shadow:0 1px 3px rgba(0,0,0,.35)}
+  .hist-tab:active{transform:scale(.97)}
+  .hist-week-ctrl{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}
+  .hist-week-ctrl[hidden]{display:none}
+  .hist-week-ctrl .ws-label{font-size:13px;font-weight:700;color:var(--ink-2);white-space:nowrap}
+  .ws-seg{display:flex;gap:4px;background:var(--bg-deep);border:1px solid var(--line);border-radius:999px;padding:3px}
+  .ws-btn{min-height:34px;padding:0 14px;border:0;border-radius:999px;background:transparent;color:var(--ink-2);font-size:13px;font-weight:700;line-height:1;white-space:nowrap}
+  .ws-btn.active{background:var(--surface-2);color:var(--ink);box-shadow:0 1px 3px rgba(0,0,0,.35)}
+  .ws-btn:active{transform:scale(.96)}
+  @media (max-width:400px){
+    .ws-btn{padding:0 10px;font-size:12px}
+    .hist-week-ctrl .ws-label{font-size:12px}
+    .hist-tab{font-size:13px}
+  }
   .hist-list{overflow-y:auto;min-height:0;display:flex;flex-direction:column;gap:14px;padding-right:2px}
   .hist-day-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:5px}
   .hist-date{font-size:15px;font-weight:900}
@@ -402,6 +418,18 @@
       <button class="hist-close" id="histClose" type="button">閉じる</button>
     </div>
     <p class="hist-note">保存は1日1件です（同じ日に保存すると上書きされます）。最大3か月分を保持し、それより古い記録は自動で消えます。</p>
+    <div class="hist-tabs" role="tablist" aria-label="履歴の表示切替">
+      <button class="hist-tab active" id="tabDaily" type="button" role="tab" aria-selected="true" data-view="daily">日別</button>
+      <button class="hist-tab" id="tabWeekly" type="button" role="tab" aria-selected="false" data-view="weekly">週間</button>
+      <button class="hist-tab" id="tabMonthly" type="button" role="tab" aria-selected="false" data-view="monthly">月間</button>
+    </div>
+    <div class="hist-week-ctrl" id="histWeekCtrl" hidden>
+      <span class="ws-label" id="wsLabel">週の始まり</span>
+      <div class="ws-seg" role="group" aria-labelledby="wsLabel">
+        <button class="ws-btn active" id="wsMonday" type="button" aria-pressed="true">月曜始まり</button>
+        <button class="ws-btn" id="wsSunday" type="button" aria-pressed="false">日曜始まり</button>
+      </div>
+    </div>
     <div class="hist-list" id="histList"></div>
   </div>
 </div>
@@ -417,6 +445,7 @@
   function defaults(){
     return {
       visible: 4,
+      weekStart: "monday", /* "monday" | "sunday" — weekly aggregation in history */
       counters: [0,1,2,3].map(function(i){
         return { name: "カウンター" + (i+1), value: 0 };
       }),
@@ -450,6 +479,7 @@
       if(!raw) return base;
       var d = JSON.parse(raw);
       if(typeof d.visible === "number" && d.visible >= 1 && d.visible <= 4) base.visible = d.visible;
+      if(d.weekStart === "monday" || d.weekStart === "sunday") base.weekStart = d.weekStart;
       /* current-format daily history */
       if(d.history && typeof d.history === "object"){
         Object.keys(d.history).forEach(function(k){
@@ -848,11 +878,88 @@
   /* ---------- history modal ---------- */
   var histOverlay = document.getElementById("histOverlay");
   var histList = document.getElementById("histList");
+  var histWeekCtrl = document.getElementById("histWeekCtrl");
+  var histView = "daily"; /* "daily" | "weekly" | "monthly" — session only */
+  var histTabs = Array.prototype.slice.call(document.querySelectorAll(".hist-tab"));
+  var wsMondayBtn = document.getElementById("wsMonday");
+  var wsSundayBtn = document.getElementById("wsSunday");
   function fmtDay(k){
     var p = k.split("-");
     return p[0] + "/" + Number(p[1]) + "/" + Number(p[2]);
   }
-  function openHistory(){
+  function parseDayKey(k){
+    var p = k.split("-");
+    return new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2]));
+  }
+  function fmtMD(d){
+    return (d.getMonth() + 1) + "/" + d.getDate();
+  }
+  /* start-of-week date for a given day, honouring the saved preference */
+  function weekStartDate(d){
+    var dow = d.getDay(); /* 0 = Sunday */
+    var offset = (state.weekStart === "sunday") ? dow : (dow + 6) % 7;
+    var s = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    s.setDate(s.getDate() - offset);
+    return s;
+  }
+  function buildTotalsRow(name, value){
+    var row = document.createElement("div"); row.className = "hist-row";
+    var nm = document.createElement("span"); nm.className = "hname"; nm.textContent = name;
+    var vl = document.createElement("span"); vl.className = "hval"; vl.textContent = value;
+    row.appendChild(nm); row.appendChild(vl);
+    return row;
+  }
+  function buildPeriodSection(title, totals){
+    var sec = document.createElement("div");
+    var headRow = document.createElement("div"); headRow.className = "hist-day-head";
+    var dateEl = document.createElement("span"); dateEl.className = "hist-date"; dateEl.textContent = title;
+    var subEl = document.createElement("span"); subEl.className = "hist-time"; subEl.textContent = "合計";
+    headRow.appendChild(dateEl); headRow.appendChild(subEl);
+    var rows = document.createElement("div"); rows.className = "hist-rows";
+    totals.forEach(function(t){ rows.appendChild(buildTotalsRow(t.name, t.value)); });
+    sec.appendChild(headRow); sec.appendChild(rows);
+    return sec;
+  }
+  /* aggregate saved daily records into ordered totals per period.
+     Grouping key comes from groupKeyFor(dayKey); days are scanned in
+     chronological order so counter names keep a stable order, and
+     periods are returned newest first. Periods with no record never
+     appear because groups are only created from existing day keys. */
+  function aggregatePeriods(groupKeyFor){
+    var dayKeys = Object.keys(state.history).sort();
+    var groups = {}; /* gk -> { totals: Map-like via object + order array } */
+    var orderOf = {};
+    dayKeys.forEach(function(k){
+      var gk = groupKeyFor(k);
+      if(!groups[gk]){ groups[gk] = {}; orderOf[gk] = []; }
+      state.history[k].entries.forEach(function(e){
+        if(!(e.name in groups[gk])){ groups[gk][e.name] = 0; orderOf[gk].push(e.name); }
+        groups[gk][e.name] += e.value;
+      });
+    });
+    return Object.keys(groups).sort().reverse().map(function(gk){
+      return {
+        key: gk,
+        totals: orderOf[gk].map(function(n){ return { name: n, value: groups[gk][n] }; })
+      };
+    });
+  }
+  function renderHistory(){
+    /* tabs */
+    histTabs.forEach(function(t){
+      var active = t.getAttribute("data-view") === histView;
+      t.classList.toggle("active", active);
+      t.setAttribute("aria-selected", active ? "true" : "false");
+    });
+    /* week-start switch: only in the weekly view, reflects saved pref */
+    var isWeekly = histView === "weekly";
+    histWeekCtrl.hidden = !isWeekly;
+    var isMon = state.weekStart !== "sunday";
+    wsMondayBtn.classList.toggle("active", isMon);
+    wsMondayBtn.setAttribute("aria-pressed", isMon ? "true" : "false");
+    wsSundayBtn.classList.toggle("active", !isMon);
+    wsSundayBtn.setAttribute("aria-pressed", !isMon ? "true" : "false");
+
     histList.innerHTML = "";
     var keys = Object.keys(state.history).sort().reverse();
     if(!keys.length){
@@ -860,27 +967,64 @@
       empty.className = "hist-empty";
       empty.textContent = "まだ保存がありません";
       histList.appendChild(empty);
+      return;
     }
-    keys.forEach(function(k){
-      var h = state.history[k];
-      var day = document.createElement("div");
-      var headRow = document.createElement("div"); headRow.className = "hist-day-head";
-      var dateEl = document.createElement("span"); dateEl.className = "hist-date"; dateEl.textContent = fmtDay(k);
-      var timeEl = document.createElement("span"); timeEl.className = "hist-time";
-      var at = new Date(h.at);
-      timeEl.textContent = isNaN(at.getTime()) ? "" : ("保存 " + String(at.getHours()).padStart(2,"0") + ":" + String(at.getMinutes()).padStart(2,"0"));
-      headRow.appendChild(dateEl); headRow.appendChild(timeEl);
-      var rows = document.createElement("div"); rows.className = "hist-rows";
-      h.entries.forEach(function(e){
-        var row = document.createElement("div"); row.className = "hist-row";
-        var nm = document.createElement("span"); nm.className = "hname"; nm.textContent = e.name;
-        var vl = document.createElement("span"); vl.className = "hval"; vl.textContent = e.value;
-        row.appendChild(nm); row.appendChild(vl);
-        rows.appendChild(row);
+    if(histView === "daily"){
+      keys.forEach(function(k){
+        var h = state.history[k];
+        var day = document.createElement("div");
+        var headRow = document.createElement("div"); headRow.className = "hist-day-head";
+        var dateEl = document.createElement("span"); dateEl.className = "hist-date"; dateEl.textContent = fmtDay(k);
+        var timeEl = document.createElement("span"); timeEl.className = "hist-time";
+        var at = new Date(h.at);
+        timeEl.textContent = isNaN(at.getTime()) ? "" : ("保存 " + String(at.getHours()).padStart(2,"0") + ":" + String(at.getMinutes()).padStart(2,"0"));
+        headRow.appendChild(dateEl); headRow.appendChild(timeEl);
+        var rows = document.createElement("div"); rows.className = "hist-rows";
+        h.entries.forEach(function(e){ rows.appendChild(buildTotalsRow(e.name, e.value)); });
+        day.appendChild(headRow); day.appendChild(rows);
+        histList.appendChild(day);
       });
-      day.appendChild(headRow); day.appendChild(rows);
-      histList.appendChild(day);
+      return;
+    }
+    if(histView === "weekly"){
+      var weekTitleByKey = {};
+      var periods = aggregatePeriods(function(k){
+        var s = weekStartDate(parseDayKey(k));
+        var gk = dayKey(s);
+        var e = new Date(s.getFullYear(), s.getMonth(), s.getDate());
+        e.setDate(e.getDate() + 6);
+        weekTitleByKey[gk] = fmtMD(s) + "〜" + fmtMD(e);
+        return gk;
+      });
+      periods.forEach(function(p){
+        histList.appendChild(buildPeriodSection(weekTitleByKey[p.key] || p.key, p.totals));
+      });
+      return;
+    }
+    /* monthly */
+    var monthPeriods = aggregatePeriods(function(k){ return k.slice(0, 7); });
+    monthPeriods.forEach(function(p){
+      var parts = p.key.split("-");
+      var title = parts[0] + "年" + Number(parts[1]) + "月";
+      histList.appendChild(buildPeriodSection(title, p.totals));
     });
+  }
+  histTabs.forEach(function(t){
+    t.addEventListener("click", function(){
+      histView = t.getAttribute("data-view") || "daily";
+      renderHistory();
+    });
+  });
+  wsMondayBtn.addEventListener("click", function(){
+    if(state.weekStart === "monday") return;
+    state.weekStart = "monday"; persist(); renderHistory();
+  });
+  wsSundayBtn.addEventListener("click", function(){
+    if(state.weekStart === "sunday") return;
+    state.weekStart = "sunday"; persist(); renderHistory();
+  });
+  function openHistory(){
+    renderHistory();
     histOverlay.classList.add("open");
     document.getElementById("histClose").focus();
   }
