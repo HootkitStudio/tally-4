@@ -5,6 +5,18 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
 <meta name="color-scheme" content="light dark" />
 <meta name="theme-color" content="#232429" />
+<script>
+(function(){
+  try{
+    var q = new URLSearchParams(window.location.search);
+    if(q.has("flat")) document.documentElement.classList.add("bgflat");
+    if(q.has("notheme")){
+      var m = document.querySelector('meta[name="theme-color"]');
+      if(m) m.parentNode.removeChild(m);
+    }
+  }catch(e){}
+})();
+</script>
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-title" content="TALLY 4" />
@@ -75,6 +87,11 @@
     background-image:
       repeating-linear-gradient(93deg,rgba(255,255,255,.016) 0 1.5px,rgba(0,0,0,.022) 1.5px 3px,transparent 3px 7.5px),
       radial-gradient(130% 95% at 50% -10%,var(--bg-hi) 0%,var(--bg) 52%,var(--bg-deep) 100%);
+  }
+  /* diagnostic toggle: ?flat — flat charcoal only, no stripes / no radial gradient */
+  html.bgflat{
+    background-image:none !important;
+    background-color:var(--bg) !important;
   }
   html,body{height:100%;touch-action:manipulation}
   body{
